@@ -1,0 +1,106 @@
+from ij import IJ, ImagePlus, WindowManager
+from loci.plugins import BF
+from loci.formats import FormatException
+import os
+import time
+import array
+
+directory = "YOUR_DIRECTORY_HERE"
+
+def open_with_bioformats(file_path):
+    try:
+        result = BF.openImagePlus(file_path)
+        if isinstance(result, array.array):
+            result = list(result)
+        IJ.log("Type of result: " + str(type(result)))
+        if isinstance(result, list):
+            IJ.log("Number of images returned: " + str(len(result)))
+            for img in result:
+                IJ.log("Image title: " + img.getTitle())
+            return result
+        else:
+            IJ.log("Unexpected result content: " + str(result))
+            return None
+    except FormatException as e:
+        IJ.log("Bio-Formats exception: " + str(e))
+        return None
+    except Exception as e:
+        IJ.log("General exception: " + str(e))
+        return None
+
+def close_all_windows():
+    windows = WindowManager.getWindowList()
+    for window in windows:
+        if window and window.getImage():
+            window.close()
+
+def process_image(imp):
+    title = imp.getTitle()
+    try:
+        imp.show()
+        IJ.run("Split Channels")
+        c1 = "C1-" + title
+        c2 = "C2-" + title
+        c3 = "C3-" + title
+        c2_max_title = "MAX_C2-" + title
+
+        IJ.selectWindow(c2)
+        IJ.run("Z Project...", "projection=[Max Intensity]")
+        IJ.log("Z-Projection command issued for channel C2 with title: " + c2_max_title)
+
+        max_wait_time = 10
+        wait_interval = 1
+        elapsed_time = 0
+
+        while elapsed_time < max_wait_time:
+            projection_window = WindowManager.getWindow(c2_max_title)
+            if projection_window:
+                IJ.log("MAX_C2 projection window found: " + c2_max_title)
+                IJ.selectWindow(c2_max_title)
+                imp_projection = IJ.getImage()
+                if imp_projection:
+                    IJ.setAutoThreshold(imp_projection, "MinError dark")
+                    IJ.run("Threshold...")
+                    IJ.run("Analyze Particles...", "show=Nothing summarize")
+                    projection_window.close()
+                else:
+                    IJ.log("Error: Could not get ImagePlus instance for window: " + c2_max_title)
+                    break
+            else:
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+
+        if elapsed_time >= max_wait_time:
+            IJ.log("Error: Window with title " + c2_max_title + " not found after waiting.")
+
+    except Exception as e:
+        IJ.log("Error processing C2 channel for image " + title + ": " + str(e))
+
+    finally:
+        try:
+            for img_title in [title, c1, c2, c3]:
+                img_window = WindowManager.getWindow(img_title)
+                if img_window:
+                    img_window.close()
+        except Exception as e:
+            IJ.log("Error closing windows for image " + title + ": " + str(e))
+
+if not os.path.exists(directory):
+    IJ.log("Directory does not exist: " + directory)
+else:
+    for filename in os.listdir(directory):
+        if filename.lower().endswith(('.czi', '.tif', '.jpg', '.png')):
+            file_path = os.path.join(directory, filename)
+            if os.path.isfile(file_path):
+                try:
+                    imps = open_with_bioformats(file_path)
+                    if imps:
+                        for imp in imps:
+                            if isinstance(imp, ImagePlus):
+                                process_image(imp)
+                            else:
+                                IJ.log("Skipping non-ImagePlus object")
+                except Exception as e:
+                    IJ.log("Error processing file " + filename + ": " + str(e))
+
+    close_all_windows()
